@@ -35,3 +35,24 @@ def send_telegram_message(text: str) -> bool:
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
         return False
+
+
+def send_telegram_photo(image_bytes: bytes, caption: str = "") -> bool:
+    """Send a JPG/PNG photo via your Telegram bot. Returns True on success."""
+    token   = os.environ["TELEGRAM_BOT_TOKEN"]
+    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
+    url = f"{TELEGRAM_API}/bot{token}/sendPhoto"
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"]    = caption
+        data["parse_mode"] = "Markdown"
+    files = {"photo": ("table.jpg", image_bytes, "image/jpeg")}
+
+    try:
+        r = requests.post(url, data=data, files=files, timeout=30)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        log.error(f"Telegram photo send failed: {e}")
+        return False
