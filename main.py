@@ -16,7 +16,8 @@ import pytz
 from utils.kite_client import KiteClient
 from utils.market_hours import is_market_open
 from strategy.analyzer import analyze_positions
-from utils.telegram import send_telegram_message
+from utils.table_image import render_table_image
+from utils.telegram import send_telegram_message, send_telegram_photo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,11 +56,24 @@ def run_monitor():
     report = analyze_positions(data, now_ist)
 
     # ── 5. Send Telegram ──────────────────────────────────────────────────────
-    if report:
-        send_telegram_message(report)
-        log.info("Alert sent to Telegram.")
-    else:
+    if not report:
         log.info("No open positions — nothing to report.")
+        return
+
+    send_telegram_message(report["text"])
+    for tbl in report.get("tables", []):
+        try:
+            img = render_table_image(
+                title=tbl["title"],
+                headers=tbl["headers"],
+                rows=tbl["rows"],
+                footer_row=tbl.get("footer"),
+                action_col_index=tbl.get("action_col_index"),
+            )
+            send_telegram_photo(img)
+        except Exception as e:
+            log.error(f"Failed to render/send table '{tbl.get('title')}': {e}")
+    log.info("Alert + table image(s) sent to Telegram.")
 
 
 def main():

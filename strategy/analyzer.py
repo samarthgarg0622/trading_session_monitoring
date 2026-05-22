@@ -265,7 +265,24 @@ def _pending_orders(orders: list) -> list:
 # MAIN ENTRY — builds the Telegram message
 # ─────────────────────────────────────────────────────────────────────────────
 
-def analyze_positions(data: dict, now_ist) -> Optional[str]:
+def analyze_positions(data: dict, now_ist) -> Optional[dict]:
+    """
+    Returns:
+      {
+        "text":   str — message body (header, notes, basket health, regime warning),
+        "tables": list of {
+            "title":            str,
+            "headers":          list[str],
+            "rows":             list[list[str]],
+            "footer":           list[str] | None,
+            "action_col_index": int | None,   # column to color-code by action
+        },
+      }
+
+    Wide tables (positions, pending orders) are returned as structured data so
+    main.py can render them as JPGs — Telegram mangles wide monospace tables
+    on both mobile and web.
+    """
     positions      = data["positions"]
     orders         = data["orders"]
     indices        = data["indices"]
@@ -293,38 +310,15 @@ def analyze_positions(data: dict, now_ist) -> Optional[str]:
     pending = _pending_orders(orders)
     health  = _basket_health(positions, ltp_map, available_funds)
 
-    # ── Compose message ───────────────────────────────────────────────────────
+    # ── Compose text message (no wide tables — those go in images) ───────────
     lines = []
-
-    # Header
     lines.append(f"*📊 Position Monitor — {time_str}*")
     lines.append(f"Nifty: `{nifty_ltp:,.0f}` | VIX: `{vix_ltp:.1f}`")
     lines.append(f"Regime: {_regime_label(nifty_below, vix_high)}")
-    lines.append("")
-
-    # Positions table
-    lines.append("*OPEN POSITIONS*")
-    lines.append("```")
-    lines.append(f"{'Symbol':<12} {'Side':<6} {'Qty':>4} {'Avg':>8} {'LTP':>8} {'P&L':>8} {'Min':>4}  Action")
-    lines.append("─" * 75)
-    for a in actions:
-        sign = "+" if a["pnl"] >= 0 else ""
-        lines.append(
-            f"{a['symbol']:<12} "
-            f"{a['side']:<6} "
-            f"{a['qty']:>4} "
-            f"{a['avg']:>8.1f} "
-            f"{a['ltp']:>8.1f} "
-            f"{sign}{a['pnl']:>7.0f} "
-            f"{a['mins']:>4}m  "
-            f"{a['action']}"
-        )
-    lines.append("─" * 75)
     sign = "+" if total_pnl >= 0 else ""
-    lines.append(f"{'Total P&L':>52} {sign}{total_pnl:,.0f}")
-    lines.append("```")
+    lines.append(f"Total P&L: `{sign}{total_pnl:,.0f}`  ({len(positions)} open)")
+    lines.append("📎 Positions table attached as image below.")
 
-    # Notes
     all_notes = [(a["symbol"], n) for a in actions for n in a["notes"]]
     if all_notes:
         lines.append("")
@@ -332,35 +326,64 @@ def analyze_positions(data: dict, now_ist) -> Optional[str]:
         for sym, note in all_notes:
             lines.append(f"• *{sym}* — {note}")
 
-    # Basket health
     if health:
         lines.append("")
         lines.append("*BASKET HEALTH*")
         for h in health:
             lines.append(h)
 
-    # Pending orders
-    if pending:
-        lines.append("")
-        lines.append("*PENDING ORDERS*")
-        lines.append("```")
-        lines.append(f"{'Symbol':<12} {'Type':<8} {'Side':<5} {'Qty':>4} {'Price':>8}  Status")
-        lines.append("─" * 52)
-        for o in pending:
-            lines.append(
-                f"{o.get('tradingsymbol',''):<12} "
-                f"{o.get('order_type',''):<8} "
-                f"{o.get('transaction_type',''):<5} "
-                f"{o.get('quantity',0):>4} "
-                f"{o.get('price',0):>8.1f}  "
-                f"{o.get('status','')}"
-            )
-        lines.append("```")
-
-    # Regime conflict warning
     if nifty_below and vix_high:
         longs = [a["symbol"] for a in actions if a["side"] == "LONG"]
         if longs:
-            lines.append(f"\n⚠️ *SHORT-ONLY regime — LONG positions open: {', '.join(longs)}*")
+            lines.append(
+                f"\n⚠️ *SHORT-ONLY regime — LONG positions open: {', '.join(longs)}*"
+            )
 
-    return "\n".join(lines)
+    # ── Build table data (rendered to JPG by main.py) ────────────────────────
+    tables = []
+
+    pos_rows = []
+    for a in actions:
+        sign = "+" if a["pnl"] >= 0 else ""
+        pos_rows.append([
+            a["symbol"],
+            a["side"],
+            str(a["qty"]),
+            f"{a['avg']:.1f}",
+            f"{a['ltp']:.1f}",
+            f"{sign}{a['pnl']:,.0f}",
+            f"{a['mins']}m",
+            a["action"],
+        ])
+    sign = "+" if total_pnl >= 0 else ""
+    pos_footer = ["", "", "", "", "Total", f"{sign}{total_pnl:,.0f}", "", ""]
+
+    tables.append({
+        "title":            f"Open Positions — {time_str}",
+        "headers":          ["Symbol", "Side", "Qty", "Avg", "LTP", "P&L", "Mins", "Action"],
+        "rows":             pos_rows,
+        "footer":           pos_footer,
+        "action_col_index": 7,
+    })
+
+    if pending:
+        pend_rows = [
+            [
+                o.get("tradingsymbol", ""),
+                o.get("order_type", ""),
+                o.get("transaction_type", ""),
+                str(o.get("quantity", 0)),
+                f"{o.get('price', 0):.1f}",
+                o.get("status", ""),
+            ]
+            for o in pending
+        ]
+        tables.append({
+            "title":            f"Pending Orders — {time_str}",
+            "headers":          ["Symbol", "Type", "Side", "Qty", "Price", "Status"],
+            "rows":             pend_rows,
+            "footer":           None,
+            "action_col_index": None,
+        })
+
+    return {"text": "\n".join(lines), "tables": tables}
